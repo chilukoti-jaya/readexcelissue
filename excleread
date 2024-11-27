@@ -1,0 +1,147 @@
+import pandas as pd
+
+def read_and_clean_data(excel_path, sheet_name=0):
+    """
+    Read Excel file and clean data types
+    """
+    # Read Excel file
+    df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    
+    # Convert relevant columns to string and clean them
+    string_columns = ['empid', 'login_id', 'emp_type', 'deleted_flag', 'status']
+    for col in string_columns:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+            # Replace 'nan' strings with empty string or appropriate default
+            df[col] = df[col].replace('nan', '')
+    
+    return df
+
+def analyze_employee_statuses(df):
+    """
+    Analyze employee records to find conflicts
+    """
+    # Clean any potential NaN values before grouping
+    df = df.fillna('')
+    
+    # Ensure all values are strings
+    df['deleted_flag'] = df['deleted_flag'].astype(str).str.upper()
+    df['status'] = df['status'].astype(str).str.upper()
+    
+    # Group by empid, login_id, and emp_type and aggregate values
+    grouped = df.groupby(['empid', 'login_id', 'emp_type']).agg({
+        'deleted_flag': list,
+        'status': list
+    }).reset_index()
+    
+    # Add analysis columns
+    grouped['has_deleted_conflict'] = grouped['deleted_flag'].apply(
+        lambda x: 'Y' in [str(i).upper() for i in x] and 'N' in [str(i).upper() for i in x]
+    )
+    grouped['has_valid_status'] = grouped['status'].apply(
+        lambda statuses: any(str(s).upper() in ['A', 'L'] for s in statuses)
+    )
+    
+    # Separate conflicts and non-conflicts
+    valid_conflicts = grouped[
+        grouped['has_deleted_conflict'] & 
+        grouped['has_valid_status']
+    ].copy()
+    
+    non_conflicts = grouped[
+        ~(grouped['has_deleted_conflict'] & 
+          grouped['has_valid_status'])
+    ].copy()
+    
+    # Process valid conflicts
+    if len(valid_conflicts) > 0:
+        valid_conflicts['has_deleted'] = valid_conflicts['deleted_flag'].apply(
+            lambda x: 'Yes' if 'Y' in [str(i).upper() for i in x] else 'No'
+        )
+        valid_conflicts['has_active'] = valid_conflicts['deleted_flag'].apply(
+            lambda x: 'Yes' if 'N' in [str(i).upper() for i in x] else 'No'
+        )
+        valid_conflicts['status_summary'] = valid_conflicts['status'].apply(
+            lambda x: ', '.join(sorted(set(str(i).upper() for i in x if str(i).strip())))
+        )
+        valid_conflicts['conflict_type'] = 'Valid Conflict (Has A/L Status)'
+        
+        valid_conflicts = valid_conflicts[[
+            'empid',
+            'login_id', 
+            'emp_type', 
+            'conflict_type', 
+            'has_deleted', 
+            'has_active', 
+            'status_summary'
+        ]]
+    else:
+        valid_conflicts = pd.DataFrame(columns=[
+            'empid',
+            'login_id', 
+            'emp_type', 
+            'conflict_type', 
+            'has_deleted', 
+            'has_active', 
+            'status_summary'
+        ])
+    
+    # Process non-conflicts
+    if len(non_conflicts) > 0:
+        non_conflicts['status_summary'] = non_conflicts['status'].apply(
+            lambda x: ', '.join(sorted(set(str(i).upper() for i in x if str(i).strip())))
+        )
+        non_conflicts['deleted_flag_summary'] = non_conflicts['deleted_flag'].apply(
+            lambda x: ', '.join(sorted(set(str(i).upper() for i in x if str(i).strip())))
+        )
+        non_conflicts['reason'] = non_conflicts.apply(
+            lambda row: get_exclusion_reason(row), axis=1
+        )
+        
+        non_conflicts = non_conflicts[[
+            'empid',
+            'login_id', 
+            'emp_type',
+            'status_summary',
+            'deleted_flag_summary',
+            'reason'
+        ]]
+    
+    return valid_conflicts, non_conflicts
+
+def get_exclusion_reason(row):
+    """Helper function to determine why a record was excluded from conflicts"""
+    if not row['has_deleted_conflict']:
+        return "No deleted flag conflict"
+    if not row['has_valid_status']:
+        return "No Active/Leave status found"
+    return "Unknown"
+
+# Example usage
+try:
+    # Read the Excel file
+    excel_path = "your_excel_file.xlsx"  # Replace with your Excel file path
+    df = read_and_clean_data(excel_path)
+    
+    print("Original Data Sample:")
+    print(df.head())
+    
+    # Check data types after reading
+    print("\nData Types:")
+    print(df.dtypes)
+    
+    # Process the data
+    conflicts, non_conflicts = analyze_employee_statuses(df)
+    
+    print("\n1. Valid Conflicts Found (with A/L status):")
+    print(conflicts)
+    print("\n2. Records Not Meeting Criteria:")
+    print(non_conflicts)
+    
+    # Save results to Excel files
+    conflicts.to_excel('conflicts.xlsx', index=False)
+    non_conflicts.to_excel('non_conflicts.xlsx', index=False)
+    
+except Exception as e:
+    print(f"An error occurred: {str(e)}")
+    print("Please check your Excel file s
